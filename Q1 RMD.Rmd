@@ -1,0 +1,332 @@
+---
+title: "Data Translation Question 1"
+author: "Ami Kinnamon"
+date: "3/16/2022"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# NOTES: THINGS TO ANSWER 
+1) Why you are running the analyses you are running
+
+2) How the analyses answer the question being asked, and what the result is
+
+3) Carefully interpreting the results
+
+4) Presenting the results in an appealing way. Graphs are great, sumtable() is great, export_summs() is great - put a little effort into formatting tables and figures to make them look nice! At the very least, variable names should be in English rather than statistics-package (‘Education’ not ‘EDUC’). You will get marked down if variable names in your tables/graphs aren’t in English. If you aren’t comfortable enough with ggplot to make its visualizations look nice, feel free to make graphics in Excel or Tableau or anything you like, and include them in your RMarkdown doc as images. Econometric analyses should be in R, and code should be visible.
+
+5) Acknowledging the assumptions you are making in each analysis, how plausible those assumptions are in the context of your data, and any evidence you can provide backing up those assumptions. Don’t forget this part, you will be marked down if you don’t do it.
+
+6) After doing all analyses related to a given question, provide a generalized answer to the main questions.
+
+
+# Question
+
+How has COVID affected the health of the retail industry, as measured by employment?
+
+
+# Loading Libraries
+
+```{r}
+library(ipumsr)
+library(vtable)
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(jtools)
+library(car)
+library(knitr)
+```
+
+
+# Loading the IPUMS Data
+
+```{r}
+ddi <- read_ipums_ddi("cps_00003.xml")
+data <- read_ipums_micro(ddi)
+```
+
+
+# Data Cleaning & Manipulation
+
+## Adding Industry Names into the data
+```{r show_col_types = FALSE}
+# Joining the original data with indnames.csv
+ind_df <- read_csv('indnames.csv')
+ind_df <- rename(ind_df, IND = ind)
+df <- left_join(data, ind_df, by = "IND")
+
+# Looking at industry names and number of observations available
+table(df$indname)
+```
+
+## Filtering for specific characteristics
+```{r}
+# Filtering for January 2018 to present day to study employment before and after the onset of the pandemic
+# Filtering to study Retail employment alone
+retail <- df %>% 
+  filter(YEAR > 2017) %>%
+  filter(indname == "Retail Trade")
+  
+# Filtering out the excess ASEC data to avoid extra observations for each March
+# Converting the NA values (non-ASEC data) into a "0"
+retail$ASECFLAG[is.na(retail$ASECFLAG)] <- 0 
+
+retail <- retail %>%
+  filter(ASECFLAG != 1)
+```
+
+## Creating new variables
+### EMPLOYED - Binary Variable for Employment Status
+```{r}
+table(retail$EMPSTAT)
+
+# Group together "10" and "12" as Employed
+# Indicate "21" as Unemployed
+# Drop "32", "34", and "36" for not being in the Labor Force 
+
+retail <- retail %>%
+  filter(EMPSTAT < 30) %>%
+  mutate(EMPLOYED = EMPSTAT != 21)
+```
+
+### YEAR_MONTH - Date Variable Combining Year and Month Together
+```{r}
+# Concatenating the YEAR and MONTH variable together
+retail$YEAR_MONTH <- str_c(retail$YEAR, "-", retail$MONTH)
+
+# Using package lubridate to render the variable as a Date type
+retail <- retail %>%
+  mutate(YEAR_MONTH = ym(YEAR_MONTH))
+```
+
+### POC - Binary Variable for RACE (whether or not the subject is a Person of Color)
+```{r}
+# TRUE for Person of Color (including those who are mixed)
+# FALSE for White
+retail <- retail %>%
+  mutate(POC = RACE != 100)
+
+table(retail$POC)
+```
+
+### FEMALE - Binary Variable for SEX (whether or not the subject is a Female)
+```{r}
+# Renaming SEX variable as FEMALE
+retail <- rename(retail, FEMALE = SEX)
+
+# Changing the "1" coding for SEX variable into FALSE
+# Changing the "2" conding for SEX variable into TRUE
+retail$FEMALE <- as.numeric(retail$FEMALE)
+retail$FEMALE[retail$FEMALE == "1"] <-"FALSE"
+retail$FEMALE[retail$FEMALE == "2"] <- "TRUE"
+
+table(retail$FEMALE)
+```
+
+### BA_DEGREE - Binary Variable for EDUC (whether or not the subject has a Bachelor's degree)
+```{r}
+# TRUE for those with a Bachelor's Degree
+# FALSE for those without
+
+table(retail$EDUC)
+
+retail$EDUC <- as.numeric(retail$EDUC)
+retail <- retail %>%
+  mutate(BA_DEGREE = EDUC > 110)
+
+table(retail$BA_DEGREE)
+```
+
+## Calculating Unemployment Rates 
+### FEMALE Variable
+```{r}
+female_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, FEMALE) %>%
+  count(YEAR_MONTH, EMPLOYED, FEMALE) %>%
+  group_by(YEAR_MONTH, FEMALE) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+### POC Variable
+```{r}
+poc_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, POC) %>%
+  count(YEAR_MONTH, EMPLOYED, POC) %>%
+  group_by(YEAR_MONTH, POC) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+### BA_DEGREE Variable
+```{r}
+ba_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, BA_DEGREE) %>%
+  count(YEAR_MONTH, EMPLOYED, BA_DEGREE) %>%
+  group_by(YEAR_MONTH, BA_DEGREE) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+## Creating a master data frame with FEMALE, POC, and BA_DEGREE included
+```{r}
+retail_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, FEMALE, POC, BA_DEGREE) %>%
+  count(YEAR_MONTH, EMPLOYED, FEMALE, POC, BA_DEGREE) %>%
+  group_by(YEAR_MONTH, FEMALE, POC, BA_DEGREE) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE") %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>%
+  
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave")))
+
+head(retail_urate)
+```
+
+# Regression
+
+```{r}
+reg <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = retail_urate)
+export_summs(reg)
+export_summs(reg, robust = TRUE)
+```
+
+# Analysis
+Accounting for differences in demographics (sex, race, and whether or not a Bachelor's degree was attained), the unemployment rate during the first COVID wave is 7.98 percentage point higher than pre-COVID time period. 
+
+The impact of this associated effect reduced over time. During the second COVID wave, the unemployment rate is 5.39 percentage points higher than pre-COVID, and by the third wave, this change drops to 1.80 percentage points. This shows that the impact of the pandemic on the health of the Retail Industry as measured by employment was much larger in the beginning of the pandemic, during the first wave between March 2020 to May 2020, in comparison to later on. 
+
+While other regression models were run with interaction terms to see if there was a notable difference of the effect of COVID between different groups like females in comparison to males, the low significance levels suggested that there was not enough evidence to support such a claim. 
+
+The controls to account for differences in sex, race, and education levels were deemed necessary because there were clearly differences in unemployment levels between certain groups, even before the pandemic. The graphs and tables below illustrate this. 
+
+## Sex 
+```{r echo = TRUE, results='asis'}
+female_data <- female_urate %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>%
+  
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave"))) %>%
+  group_by(COVID_WAVES, FEMALE) %>%
+  summarise(mean(U_RATE))
+
+female_data %>%
+  kbl() %>%
+  kable_styling()
+```
+
+```{r}
+fem_line <- ggplot(data=female_urate, aes(x=YEAR_MONTH, y=U_RATE, color=FEMALE)) + geom_line()
+fem_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0.5, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves by Sex",
+       y = "Unemployment Rate (%)") 
+```
+
+## Race
+```{r echo = TRUE, results='asis'}
+poc_data <- poc_urate %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>%
+  
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave"))) %>%
+  group_by(COVID_WAVES, POC) %>%
+  summarise(mean(U_RATE))
+
+poc_data %>%
+  kbl() %>%
+  kable_styling()
+```
+
+```{r}
+poc_line <- ggplot(data=poc_urate, aes(x=YEAR_MONTH, y=U_RATE, color=POC)) + geom_line()
+poc_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0.5, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves by Race",
+       y = "Unemployment Rate (%)") 
+```
+
+
+# Level of Education
+```{r echo = TRUE, results='asis'}
+ba_data <- ba_urate %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>%
+  
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave"))) %>%
+  group_by(COVID_WAVES, BA_DEGREE) %>%
+  summarise(mean(U_RATE))
+
+ba_data %>%
+  kbl() %>%
+  kable_styling()
+```
+
+```{r}
+ba_line <- ggplot(data=ba_urate, aes(x=YEAR_MONTH, y=U_RATE, color=BA_DEGREE)) + geom_line()
+ba_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0.5, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves by Education",
+       y = "Unemployment Rate (%)") 
+```
+
+
