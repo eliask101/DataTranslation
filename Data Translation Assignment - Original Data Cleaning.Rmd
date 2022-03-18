@@ -1,0 +1,66 @@
+---
+title: "Data Translation Assignment - Original Data Cleaning"
+author: "Group 1"
+date: "3/17/2022"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load in Data and Original Cleaning of Data Set
+
+## Load Libraries and Read Data
+
+```{r, message = FALSE}
+library(ipumsr)
+library(vtable)
+library(tidyverse)
+library(lubridate)
+library(jtools)
+library(haven)
+library(rdrobust)
+
+ddi <- read_ipums_ddi("cps_00002.xml")
+data <- read_ipums_micro(ddi)
+```
+
+
+## Initial Data Adjustments
+
+Identify rows and columns:
+
+```{r}
+vtable(data)
+```
+
+This helps us get an idea of what the variables are and what they mean. This will be helpful for dropping whatever we find irrelevant for our questions.
+
+Remove columns not applicable to our question:
+
+```{r}
+data <- data %>% 
+  filter(YEAR > 2017) %>% 
+  select(-c(CPSID, ASECFLAG, ASECWTH, ASECWT, CPSIDP, DURUNEM2, HWTFINL))
+```
+
+Join our dataset by the provided industry names. Remove any blanks in our data set. Note: modify file path to reflect your working directory.
+
+```{r}
+ind_df <- read_csv('indnames.csv')
+ind_df <- rename(ind_df, IND = ind)
+new_df <- left_join(data, ind_df, by = "IND")
+
+df <- new_df %>% 
+  filter(!is.na(indname))
+
+#write.csv(df, "C:\\[FILE PATH]\\Rough_DF.csv")
+```
+
+Each of us wrote the file to our working directory and did further cleaning to narrow down our data sets in answering the questions we want to answer.
