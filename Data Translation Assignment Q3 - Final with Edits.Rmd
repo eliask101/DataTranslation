@@ -1,0 +1,646 @@
+---
+title: "Data Translation Assignment Question 3"
+author: "Elias Kazemi and Ryan Ogi"
+date: "3/13/2022"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Cleaning for Question 3 - Who is Earning Money and How has COVID Affected Them?
+
+In this section, we are trying to answer the question: Retail needs to worry about who has money to spend - what has changed about who is working and earning money?
+
+## Libraries
+
+```{r}
+library(ipumsr)
+library(vtable)
+library(tidyverse)
+library(lubridate)
+library(jtools)
+library(haven)
+library(rdrobust)
+```
+
+
+## Cleaning the EARNWEEK variable
+
+In our EARNWEEK column, 9999.99 is used instead of N/A or blanks in our data for people with unreported data. We must first clean our data to where these 9999.99 values doesn't affect our models. 
+
+```{r}
+df <- read.csv('Rough_DF.csv', header = TRUE)
+df <- df %>% 
+  mutate(EARNWEEK = ifelse(EARNWEEK > 9999, NA_real_, EARNWEEK))
+```
+
+
+Next we must select only the columns that apply to our question. We decided to choose YEAR, MONTH, EMPSTAT, OCC, CLASSWKR, WKSTAT, EARNWEEK, and indname as our variables. 
+
+```{r}
+earnweekdf <- df %>% 
+  select(c(YEAR, MONTH, EMPSTAT, OCC, CLASSWKR, WKSTAT, EARNWEEK, indname))
+```
+
+
+We want to have our dates in "year-month-day" format instead of three separate columns. We want to combine these columns into the "year-month-day" format for analysis later. 
+
+```{r}
+earnweekdf$Date <- paste(earnweekdf$MONTH, earnweekdf$YEAR)
+earnweekdf$Date <- my(earnweekdf$Date)
+
+earnweekdf <- earnweekdf %>% 
+  select(-c(YEAR, MONTH))
+```
+
+
+Since we're measuring the effect of COVID on our the rest of the retail sector as well as the economy, we must add a cutoff date to mark the start of the recession. 2020/01/31 marks as our cutoff date for the start of the recession. Any date after 2020/01/31 will be categorized as "PostCOVID". This was around the period COVID was labeled a global pandemic.
+
+```{r}
+earnweekdf <- earnweekdf %>% 
+  mutate(PostCOVID = Date > ymd(20200131))
+```
+
+To make our testing data we want to match the industry names with their "PostCOVID" results and their results after the recession date respectively. We then average the earning of each industry with their appropriate results (before COVID date cutoff and after the COVID date cutoff). 
+
+```{r}
+effectonearnings <- earnweekdf %>% 
+  group_by(indname, PostCOVID) %>% 
+  summarize(avgearn = mean(EARNWEEK, na.rm = TRUE))
+```
+
+## Quick Look
+
+We wanted to take a quick look before our regressions. Graphing our results showing the average earning in each industry will help in developing an understanding of our data. We decided to use two different graphs to represent pre and post COVID cutoff. As we can see, there is a slight decrease in the economy from pre COVID to post COVID for each industry.
+
+Our code below shows, removed any missing values in the data set, filtering in the pre COVID results, finding the mean of our pre-COVID earning average, filtering in the post COVID results, and finding the mean of our post COVID earning average. 
+
+TRUE shows the average earnings post cutoff COVID date. FALSE shows the average earnings pre cutoff COVID date.
+
+```{r}
+effectonearnings <- effectonearnings %>% 
+  drop_na()
+
+PostCOVIDearnavg <- effectonearnings %>% 
+  filter(PostCOVID == TRUE)
+
+PostCOVIDearnavg <- mean(PostCOVIDearnavg$avgearn)
+
+postcovidearnavg <- effectonearnings %>% 
+  filter(PostCOVID == FALSE)
+
+postcovidearnavg <- mean(postcovidearnavg$avgearn)
+
+ggplot(data = effectonearnings, aes(x = PostCOVID, y = avgearn, fill = indname)) + geom_bar(stat = "identity", position = position_dodge()) + theme(legend.title = element_text(size = 5), legend.text = element_text(size = 5)) + guides(color = guide_legend(override.aes = list(size = 0.5))) + guides(shape = guide_legend(override.aes = list(size = 0.5))) + labs(x = 'Before or After Covid', y = 'Average Earnings ($)', fill = 'Industry') + scale_x_discrete(labels=c("FALSE" = "Before", "TRUE" = "After"))
+```
+
+## Quick Comments
+
+Looking at the data above, the industry leaders for average earnings are finance, information, manufacturing, and other services and public administration remained at the top for the highest averages both pre COVID and post COVID. Retail was negatively affected by COVID. Most of the industries had a slight decrease in average earnings. 
+
+Right off the bat, we can see that some industries had very little change in their earnings and some had a greater decrease. We'll be able to see what these differences are in later analysis. *However, from a quick look, the change in the average weekly-earnings for each grouped industry before and after COVID does not seem to be significant.*
+
+# Regression Discontinuity Analaysis (RDD) - Earnings over Time
+
+## How has Earnings Changed and How has COVID Affected Them?
+
+We're testing to see the difference in earning per week before and after the COVID cutoff date. Our group decided to find the regression for earning per week for each industry in respect to before and after the cutoff COVID date (2020/01/31). The first graph shows the industry earning per week in respect to the year (macro, long-term). The second graph shows a zoomed in focus on earnings per week closer towards the cutoff COVID date (micro, immediate affect). 
+
+TRUE (teal-colored-line) shows the earning per week pre cutoff COVID date. FALSE (red-colored-line) shows the earning per week post cutoff COVID date. 
+
+*We will really only be doing analysis for the retail industry and other industries that have a statistically significant effect.*
+
+### Retail Industry
+
+Initially, the retail industry took a loss in earning per week due to COVID. Later, the retail industry was able to bring itself back and recovered from the initial loss in later years. 
+
+```{r}
+earnweekdf1 <- earnweekdf %>% 
+  filter(indname == 'Retail Trade')
+
+m1 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf1)
+export_summs(m1)
+```
+
+According to the regression for retail, we can interpret this by first looking at the intercept. Since we have date on the x-axis, when date is 0, we have a negative intercept. This is because the date doesn't start at 0. There's a coefficient of 0.11 on the Date variable for retail, meaning as we go day-to-day, weekly earnings increase by 0.11. The PostCOVIDTRUE coefficient is regarding to, controlling for date, the effect of COVID on earnings. Since controlling for date means the effect when date is 0, this coefficient is not very useful to us. The important last variable is the interaction term between date and COVID. We can see that when we are in the after-COVID time, earnings increases by 0.02 more than 0.11. So, the estimated associated effect of COVID on earnings after our cutoff is 0.13. 
+
+However, this interaction is not statistically significant, so this association of COVID on earnings is not one that we can say is strong enough to reject the null hypothesis that there was no effect on earnings for this industry.
+
+```{r}
+earnweekdf1 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+This graph shoes us this similar relationship. The line is the average of the values on each day. For the retail, the effect is very minimal, if existent at all (considering the results were not statistically significant)
+
+```{r}
+earnweekdf1 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+By taking a closer look, we can see that the average retail employee's weekly earnings did not really change much when COVID was declared a national pandemic. So, as we go through the rest of the industries, we will only be analyzing ones that have statistically significant results.
+
+### Professional, Scientific, Management, and Administrative and Waste Management Services Industry
+
+Professional, Scientific, and Management, and Administrative and Waste Management Services benefited since the COVID cutoff date. An increase in earnings per week was shown immediately and continues to increase in the future.
+
+```{r}
+earnweekdf2 <- earnweekdf %>% 
+  filter(indname == 'Professional, Scientific, and Management, and Administrative and Waste Management Services')
+
+m2 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf2)
+export_summs(m2)
+```
+
+In this model, we can see a statistically significant effect of COVID on earnings for the Professional, Scientific, Management, and Administrative and Waste Management Services industry. Our interaction shows a 0.09 decrease in the slope after COVID, so although earnings increased over the course of a few years, it increased at a much slower rate for this industry. 
+
+```{r}
+earnweekdf2 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf2 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Finance and Insurance, and Real Estate and Rental and Leasing Industry
+
+```{r}
+earnweekdf3 <- earnweekdf %>% 
+  filter(indname == 'Finance and Insurance, and Real Estate and Rental and Leasing')
+
+m3 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf3)
+export_summs(m3)
+```
+
+Here we have basically no effect of COVID on employee weekly earnings. However, this isn't statistically significant, so there may have been one, but the model did not see one.
+
+
+```{r}
+earnweekdf3 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf3 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Educational Services, and Health Care and Social Assistance Industry
+
+Educational Services, and Health Care and Social Assistance Industry benefited since the COVID cutoff date. An increase in earnings per week was shown immediately and continues to increase in the future.
+
+```{r}
+earnweekdf4 <- earnweekdf %>% 
+  filter(indname == 'Educational Services, and Health Care and Social Assistance')
+
+m4 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf4)
+export_summs(m4)
+```
+
+
+```{r}
+earnweekdf4 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf4 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Arts, Entertainment, and Recreation, and Accommodation and Food Services Industry
+
+```{r}
+earnweekdf5 <- earnweekdf %>% 
+  filter(indname == 'Arts, Entertainment, and Recreation, and Accommodation and Food Services')
+
+m5 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf5)
+export_summs(m5)
+```
+
+
+```{r}
+earnweekdf5 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf5 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Public Administration Industry
+
+```{r}
+earnweekdf6 <- earnweekdf %>% 
+  filter(indname == 'Public Administration')
+
+m6 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf6)
+export_summs(m6)
+```
+
+
+```{r}
+earnweekdf6 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf6 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Agriculture, Forestry, Fishing, and Hunting, and Mining Industry
+
+```{r}
+earnweekdf7 <- earnweekdf %>% 
+  filter(indname == 'Agriculture, Forestry, Fishing, and Hunting, and Mining')
+
+m7 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf7)
+export_summs(m7)
+```
+
+Here, we have another statistically significant result at p < 0.05, where COVID has a pretty substantial effect on earnings in the Agriculture, Forestry, Fishing, and Hunting, and Mining industries. COVID basically made the increase in weekly earnings across the years non-existent when it was declared a global pandemic, with earnings only increasing by 0.01 per day post-COVID. 
+
+```{r}
+earnweekdf7 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+We can see the graph here showing this almost constant weekly earnings after COVID hit.
+
+```{r}
+earnweekdf7 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Transportation and Warehousing, and Utilities Industry
+
+Transportation and Warehousing, and Utilities Industry benefited since the COVID cutoff date. An increase in earnings per week was shown immediately and continues to increase in the future.
+
+```{r}
+earnweekdf8 <- earnweekdf %>% 
+  filter(indname == 'Transportation and Warehousing, and Utilities')
+
+m8 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf8)
+export_summs(m8)
+```
+
+```{r}
+earnweekdf8 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf8 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Construction Industry
+
+```{r}
+earnweekdf9 <- earnweekdf %>% 
+  filter(indname == 'Construction')
+
+m9 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf9)
+export_summs(m9)
+```
+
+```{r}
+earnweekdf9 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf9 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Manufacturing Industry
+
+Manufacturing Industry benefited since the COVID cutoff date. An increase in earnings per week was shown immediately and continues to increase in the future.
+
+```{r}
+earnweekdf10 <- earnweekdf %>% 
+  filter(indname == 'Manufacturing')
+
+m10 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf10)
+export_summs(m10)
+```
+
+```{r}
+earnweekdf10 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf10 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Other Services, Except Public Administration Industry
+
+Initially, Other Services, Except Public Administration Industry had a decease in earnings per week. A few months after the COVID cutoff, Other Services, Except Public Administration Industry were able to stabilize. In later years, Other Services, Except Public Administration Industry were able to have a growth in earnings per week. 
+
+```{r}
+earnweekdf10 <- earnweekdf %>% 
+  filter(indname == 'Other Services, Except Public Administration')
+
+m10 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf10)
+export_summs(m10)
+```
+
+```{r}
+earnweekdf10 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf10 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+### Wholesale Trade Industry
+
+The Wholesale Trade Industry didn't have an initial affect after the COVID cutoff date. After a few months, there was a slight and steady increase in earning per week.  
+
+```{r}
+earnweekdf11 <- earnweekdf %>% 
+  filter(indname == 'Wholesale Trade')
+
+m11 <- lm(EARNWEEK ~ Date * PostCOVID, data = earnweekdf11)
+export_summs(m11)
+```
+
+```{r}
+earnweekdf11 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+```{r}
+earnweekdf11 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EARNWEEK, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,3500) + geom_hline(yintercept = 0) + xlim(mdy(09012019),mdy(09012020)) + labs(title = 'COVID Effect on Earnings over Time', y = 'Earnings', color = 'PostCOVID?')
+```
+
+## Conclusion - What has changed about who is earning Money?
+
+According to the models, there weren't many industries that had a statistically significant effect of COVID on the industry employee's weekly earnings. We can see that, for most, as time when on, earnings increased, but COVID introduced little to no impact on their earnings throughout the duration of COVID. The industry with a notable effect was the Agriculture, Forestry, Fishing, and Hunting, and Mining industry, which found almost constant weekly earnings relative to date throughout COVID. The Professional, Scientific, and Management, and Administrative and Waste Management Services industry also had a statistically significant effect, which shows that these industries may have had to introduce pay cuts after COVID was declared a global pandemic. 
+
+As far as the other industries go, there weren't effects that were statistically significant, so we can't really draw conclusions from them, but on average, most industries saw a decline in their earnings after COVID was announced a global pandemic.
+
+# Regression Discontinuity Analaysis (RDD) - Employment over Time
+
+## How has Employment Changed and How has COVID Affected Employment?
+
+We're testing to see the difference in employment before and after the COVID cutoff date. Similar to the earning regression graphs, our group decided to find the regression for employment for each industry in respect to before and after the cutoff COVID date (2020/01/31). The first graph shows the industry employment in respect to the year (macro, long-term). The second graph shows a zoomed in focus on earnings per week closer towards the cutoff COVID date (micro, immediate affect). 
+
+TRUE (teal-colored-line) shows the employment post cutoff COVID date. FALSE (red-colored-line) shows the employment pre cutoff COVID date.
+
+The code below filters out data and employees who are not in the labor force. We then assign employed employees as 1 and unemployed employees as 0. 
+
+```{r}
+empstatdf <- earnweekdf %>% 
+  filter(EMPSTAT > 09) %>% 
+  filter(EMPSTAT < 23)
+
+# Filters out not in labor force, includes employed and unemployed
+
+empstatdf <- empstatdf %>% 
+  mutate(EMPSTAT = replace(EMPSTAT, EMPSTAT == 10, 1)) %>% 
+  mutate(EMPSTAT = replace(EMPSTAT, EMPSTAT == 12, 1))
+empstatdf <- empstatdf %>% 
+  mutate(EMPSTAT = replace(EMPSTAT, EMPSTAT == 20, 0)) %>% 
+  mutate(EMPSTAT = replace(EMPSTAT, EMPSTAT == 21, 0))
+
+# Employed = 1, Unemployed = 0
+```
+
+By filtering out those not in the labor force and assigning a binary variable to those employed and unemployed, we can see how, on average, employment levels changed throughout the Pre-COVID and Post-COVID periods.
+
+### Retail Industry
+ 
+```{r}
+empstatdf1 <- empstatdf %>% 
+  filter(indname == 'Retail Trade')
+
+m12 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf1)
+export_summs(m12)
+```
+
+Interpreting the coefficients here, the Intercept lets us know where employment levels would be controlling for date and COVID, so in the beginning of our time-frame, we have about 70% of people employed. We can see that as soon as we jump over the cutoff, however, there's a decrease in employment, meaning controlling for the date's effect on employment, COVID is associated with a 0.89 decrease in employment, which technically means that Post-COVID people in this industry saw sharp unemployment.
+
+The rest of the industries have varying results, some being very stable and some being pretty drastic dips in employment when COVID is declared a pandemic. (see arts industry)
+
+```{r}
+empstatdf1 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf1 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Professional, Scientific, and Management, and Administrative and Waste Management Services Industry
+
+```{r}
+empstatdf2 <- empstatdf %>% 
+  filter(indname == 'Professional, Scientific, and Management, and Administrative and Waste Management Services')
+
+m13 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf2)
+export_summs(m13)
+```
+
+```{r}
+empstatdf2 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf2 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Finance and Insurance, and Real Estate and Rental and Leasing Industry
+
+```{r}
+empstatdf3 <- empstatdf %>% 
+  filter(indname == 'Finance and Insurance, and Real Estate and Rental and Leasing')
+
+m14 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf3)
+export_summs(m14)
+```
+
+```{r}
+empstatdf3 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + geom_hline(yintercept = 0)
+```
+
+```{r}
+empstatdf3 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Educational Services, and Health Care and Social Assistance Industry
+
+```{r}
+empstatdf4 <- empstatdf %>% 
+  filter(indname == 'Educational Services, and Health Care and Social Assistance')
+
+m15 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf4)
+export_summs(m15)
+```
+
+```{r}
+empstatdf4 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf4 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Arts, Entertainment, and Recreation, and Accommodation and Food Services Industry
+
+```{r}
+empstatdf5 <- empstatdf %>% 
+  filter(indname == 'Arts, Entertainment, and Recreation, and Accommodation and Food Services')
+
+m16 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf5)
+export_summs(m16)
+```
+
+```{r}
+empstatdf5 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf5 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+The interesting thing about this industry is in the short term, there's a decrease in employment, but long-term, the industry recovers, as most of the industries do. This is one of the benefits of shortening the window we're looking at.
+
+### Public Administration Industry
+
+```{r}
+empstatdf6 <- empstatdf %>% 
+  filter(indname == 'Public Administration')
+
+m17 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf6)
+export_summs(m17)
+```
+
+```{r}
+empstatdf6 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf6 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Agriculture, Forestry, Fishing, and Hunting, and Mining Industry
+
+```{r}
+empstatdf7 <- empstatdf %>% 
+  filter(indname == 'Agriculture, Forestry, Fishing, and Hunting, and Mining')
+
+m18 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf7)
+export_summs(m18)
+```
+
+```{r}
+empstatdf7 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf7 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Transportation and Warehousing, and Utilities Industry
+
+```{r}
+empstatdf8 <- empstatdf %>% 
+  filter(indname == 'Transportation and Warehousing, and Utilities')
+
+m19 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf8)
+export_summs(m19)
+```
+
+```{r}
+empstatdf8 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf8 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Construction Industry
+
+```{r}
+empstatdf9 <- empstatdf %>% 
+  filter(indname == 'Construction')
+
+m20 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf9)
+export_summs(m20)
+```
+
+```{r}
+empstatdf9 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf9 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Manufacturing Industry
+
+```{r}
+empstatdf10 <- empstatdf %>% 
+  filter(indname == 'Manufacturing')
+
+m21 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf10)
+export_summs(m21)
+```
+
+```{r}
+empstatdf10 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf10 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Other Services, Except Public Administration Industry
+
+```{r}
+empstatdf11 <- empstatdf %>% 
+  filter(indname == 'Other Services, Except Public Administration')
+
+m22 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf11)
+export_summs(m22)
+```
+
+```{r}
+empstatdf11 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf11 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+### Wholesale Trade Industry
+
+```{r}
+empstatdf12 <- empstatdf %>% 
+  filter(indname == 'Wholesale Trade')
+
+m23 <- lm(EMPSTAT ~ Date * PostCOVID, data = empstatdf12)
+export_summs(m23)
+```
+
+```{r}
+empstatdf12 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID')
+```
+
+```{r}
+empstatdf12 %>% mutate(date_group = as.factor(PostCOVID)) %>% ggplot(aes(x = Date, y = EMPSTAT, color = date_group)) + geom_point(size = 0.5) + geom_vline(xintercept = mdy(01152020)) + geom_smooth(method = "lm", se = FALSE) + ylim(0,1) + geom_hline(yintercept = 0) + labs(title = 'COVID Effect on Employment Status over Time', y = 'Employed?', color = 'PostCOVID') + xlim(mdy(09012019),mdy(09012020))
+```
+
+## Conclusion - What has changed about who is working?
+
+Our observation concludes that every industry experienced a similar trend in terms of unemployment. This was an initial loss in employment due to COVID, and then employment increased slowly around 2021. While some industries had pretty constant employment and some had a sharp cut, the earnings and employment variables across industries didn't necessarily see a similar trend, for example, industries with a decrease in earnings did not always have a decrease in employment. 
+
+# Final Conclusion
+
+In conclusion, depending on when retail wanted to know the change, we can conclude that initially after the COVID date cutoff, manufacturing, construction, transportation, educational, and professional industries weren't really affected negatively for earnings while every other industry was negative affected. Around a year after the COVID date cutoff, the earning per week returned back to Pre COVID results, except for the agriculture industry which remained stagnant. In 2022, the earning per week returned back to Pre COVID results if not greater except for the agriculture industry. This means the original industry leaders (finance, information, manufacturing, and other services and public administration) are still on the top for average earnings in 2022. 
+
+In terms of employment, every industry experienced the same trend in terms of unemployment. An initial loss in employment due to COVID. Then started to increase employment slowly around 2021. To eventually stabilize to prior employment back to Pre COVID rates in 2022. One thing to note is the arts industry had the biggest initial lost in employment at the start of the cutoff COVID date.
+
+Some things to note about our data and our models:
+
+There were a ton of observations on the first of each month, which makes it difficult to clearly see the effect of COVID, especially when it was declared a national pandemic. A lot can change month-to-month with lock-downs varying state-to-state and everywhere being on different timelines.
+
+Also, our data does not take into account inflation from the years 2019 to now. This was not controlled for or adjusted for, so the coefficient on date for earnings may include inflation. This goes for raises year-to-year as well if applicable.
+
+A lot of the models weren't statistically significant when looking at weekly employee earnings. So, we cannot reject the null hypothesis that there was an effect on earnings from COVID for all industries. 
+
+
+
