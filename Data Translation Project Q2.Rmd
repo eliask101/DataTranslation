@@ -1,0 +1,287 @@
+---
+title: "Data Translation Assignment: Question 2"
+author: "Group 1"
+date: "3/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Question 2: 
+#### How has retail fared relative to other industries?
+
+In order to study COVID's effect on the retail industry, relative to other industries, we are running a multivariate linear regression with unemployment rate as the dependent variable and different waves of the pandemic as the main independent variable alongside multiple controls that reflect different demographics. We are repeating this process with several different industries alongside the retail industry. Doing this will allow us to compare the chosen industries ('Manufacturing', 'Arts, Entertainment, Recreation, Accommodation and Food Services', 'Professional, Scientific, and Management, and Administrative and Waste Management Services', and 'Educational Services, and Health Care and Social Assistance') amongst each other, specifically with the retail industry.
+
+Note: Our regression set up and data cleaning is based off of the first question.
+<br>
+
+#### How do the analyses answer the question being asked?
+The analyses answers the question at hand by first determining the effect COVID has/had on the retail industry, then identifying several different industries in which COVID also affected, and lastly  using the gathered knowledge to compare the retail industry among the other industries to gain a better idea of where the retail industry stands (or how the retail industry has fared) relative to other industries.
+
+<br>
+
+### Libraries
+
+```{r}
+library(ipumsr)
+library(vtable)
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(jtools)
+library(car)
+library(knitr)
+```
+
+<br>
+
+### Loading IPUMS Data
+```{r}
+ddi <- read_ipums_ddi("cps_00003.xml")
+data <- read_ipums_micro(ddi)
+```
+
+<br>
+
+### Data Cleaning & Manipulation
+#### Adding Industry Names into the data
+```{r}
+# Joining the original data with indnames.csv
+ind_df <- read_csv('indnames.csv')
+ind_df <- rename(ind_df, IND = ind)
+df <- left_join(data, ind_df, by = "IND")
+df <- rename(df, INDNAME = indname)
+
+# Looking at industry names and number of observations available
+table(df$INDNAME)
+```
+
+#### Filtering for specific characteristics
+```{r}
+# Filtering for January 2018 to present day to study employment before and after the onset of the pandemic
+df <- df %>% 
+  filter(YEAR > 2017) 
+
+# Filtering out the excess ASEC data to avoid extra observations for each March
+# Converting the NA values (non-ASEC data) into a "0"
+df$ASECFLAG[is.na(df$ASECFLAG)] <- 0 
+df <- df %>%
+  filter(ASECFLAG != 1)
+
+df <- df %>% 
+  filter(!is.na(INDNAME)) %>%
+  select(YEAR, MONTH, IND, CPSID, EMPSTAT, INDNAME, SEX, RACE, EDUC, WTFINL)
+```
+
+#### Creating new variables
+EMPLOYED - Binary Variable (TRUE or FALSE)
+```{r}
+# Group together "10" and "12" as Employed
+# Indicate "21" as Unemployed
+# Drop "32", "34", and "36" for not being in the Labor Force 
+
+df <- df %>%
+  filter(EMPSTAT < 30) %>%
+  mutate(EMPLOYED = EMPSTAT != 21)
+```
+
+YEAR_MONTH - Date Variable combining YEAR and MONTH together
+```{r}
+# Concatenating the YEAR and MONTH variable together
+df$YEAR_MONTH <- str_c(df$YEAR, "-", df$MONTH)
+
+# Using package lubridate to render the variable as a Date type
+df <- df %>%
+  mutate(YEAR_MONTH = ym(YEAR_MONTH))
+```
+
+FEMALE - Binary Variable (TRUE or FALSE)
+```{r}
+# Renaming SEX variable as FEMALE
+df <- rename(df, FEMALE = SEX)
+
+# Changing the "1" coding for SEX variable into FALSE
+# Changing the "2" coding for SEX variable into TRUE
+df$FEMALE <- as.numeric(df$FEMALE)
+df$FEMALE[df$FEMALE == "1"] <-"FALSE"
+df$FEMALE[df$FEMALE == "2"] <- "TRUE"
+```
+
+POC - Binary Variable for RACE (TRUE for Person of Color, FALSE for White)
+```{r}
+# Exclude 100 - code for White
+# POC includes all people of color, including those with mixed heritage
+df <- df %>%
+  mutate(POC = RACE != 100)
+```
+
+BA_DEGREE - Binary Variable for Bachelor's Degree Holders (TRUE or FALSE)
+```{r}
+# TRUE for those with a Bachelor's Degree
+# FALSE for those without
+
+df$EDUC <- as.numeric(df$EDUC)
+df <- df %>%
+  mutate(BA_DEGREE = EDUC > 110)
+```
+
+#### Calculating Unemployment Rates
+```{r}
+df_urate <- df %>%
+  select(YEAR_MONTH, INDNAME, EMPLOYED, FEMALE, POC, BA_DEGREE, WTFINL) %>%
+  group_by(YEAR_MONTH, INDNAME, FEMALE, POC, BA_DEGREE, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE") %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>%
+  
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave")))
+```
+
+
+The 5 industries with the most observations are:
+* Educational Services, and Health Care and Social Assistance,
+* Professional, Scientific, and Management, and Administrative and Waste Management Services
+* Retail Trade
+* Manufacturing
+* Arts, Entertainment, and Recreation, and Accommodation and Food Services
+
+We focused on comparing the health of the Retail Industry against these four other industries. 
+
+```{r}
+# Filtering for the top 5 industries
+top5obs <- df_urate %>%
+  filter(INDNAME %in% c("Educational Services, and Health Care and Social Assistance",
+                        "Professional, Scientific, and Management, and Administrative and Waste Management Services",
+                        "Retail Trade",
+                        "Manufacturing",
+                        "Arts, Entertainment, and Recreation, and Accommodation and Food Services"))
+
+
+# Creating separate data frames to create a regression for each industry
+education_urate <- df_urate %>%
+  filter(INDNAME == "Educational Services, and Health Care and Social Assistance")
+
+science_urate <- df_urate %>%
+  filter(INDNAME == "Professional, Scientific, and Management, and Administrative and Waste Management Services")
+
+retail_urate <- df_urate %>%
+  filter(INDNAME == "Retail Trade")
+
+manufacturing_urate <- df_urate %>%
+  filter(INDNAME == "Manufacturing")
+
+entertainment_urate <- df_urate %>%
+  filter(INDNAME == "Arts, Entertainment, and Recreation, and Accommodation and Food Services")
+```
+
+### Visualization
+
+```{r}
+urate_graph <- df %>%
+  select(YEAR_MONTH, INDNAME, EMPLOYED, WTFINL) %>%
+  group_by(YEAR_MONTH, INDNAME, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE") %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>%
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave"))) %>%
+  filter(YEAR_MONTH > "2018-12-01")
+
+# Creating a data frame with the industries with the most observations 
+top5obs <- urate_graph %>%
+  filter(INDNAME %in% c("Educational Services, and Health Care and Social Assistance",
+                        "Professional, Scientific, and Management, and Administrative and Waste Management Services",
+                        "Retail Trade",
+                        "Manufacturing",
+                        "Arts, Entertainment, and Recreation, and Accommodation and Food Services"))
+
+
+# Renaming the industry names to simplify
+top5obs$INDNAME[top5obs$INDNAME == "Educational Services, and Health Care and Social Assistance"] <-"Education"
+
+top5obs$INDNAME[top5obs$INDNAME == "Professional, Scientific, and Management, and Administrative and Waste Management Services"] <-"Professional Services"
+
+top5obs$INDNAME[top5obs$INDNAME == "Arts, Entertainment, and Recreation, and Accommodation and Food Services"] <-"Entertainment & Food"
+```
+
+```{r}
+ind_line <- ggplot(data=top5obs, aes(x=YEAR_MONTH, y=U_RATE, color=INDNAME)) + geom_line()
+ind_line + scale_x_date(breaks = scales::breaks_pretty(8)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0.5, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Unemployment Rate Through COVID-19 Waves by Industry",
+       y = "Unemployment Rate (%)") +
+  scale_color_discrete(name ="Industry")
+```
+<br>
+Overall, every industry experienced a spike in the unemployment rate within the first wave of the pandemic. The Entertainment & Food industry had the largest increase by far, with the Retail industry showing the second largest increase. The unemployment rate fell in the subsequent waves. 
+
+<br>
+### Regressions & Results
+```{r}
+reg_retail <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = retail_urate)
+
+reg_entertainment <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = entertainment_urate)
+
+reg_science <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = science_urate)
+
+reg_manufacturing <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = manufacturing_urate)
+
+reg_education <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = education_urate)
+
+export_summs(reg_retail, reg_entertainment, reg_science, reg_manufacturing, reg_education, 
+             robust = TRUE,
+             model.names = c("Retail","Entertainment","Professional Services", "Manufacturing", "Education"))
+```
+
+#### Interpreting the results
+
+Accounting for differences in demographics (sex, race, and whether or not a Bachelor's degree or higher was attained), the above regression chart demonstrates the four different waves of COVID-19 in respect to pre-COVID employment rates. Looking at the first wave of COVID ('COVID_WAVESFirstWave'), all coefficients represent the increase in unemployment rate (in percentage points) after COVID-19 was declared a national pandemic (i.e. the initial shock of COVID-19). We see the industry impacted the largest is the Entertainment industry, where the unemployment rate is 22.05 percentage points higher than the pre-COVID time period. The least impacted industry from the initial 'shock' of the pandemic is the Professional Services industry, only being 4.77 percentage points higher than the pre-COVID time period.
+
+Within the second, third, and fourth waves, we see all industries following relatively the same effect, all reaching a higher employment rate by the fourth wave. Following the initial shock of COVID illustrated in the first wave, the impact became smaller in the subsequent waves. The Entertainment industry continued to be the largest affected industry relative to the other four. The Retail industry, was the second most affected industry for the entire span of COVID-19 to date (except a brief period in January 2021). It appears that the Retail industry took a bigger hit than Manufacturing, Education, and Professional Services industries, but was not impacted nearly as hard as the Entertainment industry did. 
+
+<br>
+
+### Assumptions
+
+Assumptions regarding the data:
+There are a few assumptions surrounding the idea of unemployment. The data does not take into account the reasoning in which some are unemployed (fatigue from work, profiting from government unemployment benefits, being lazy). Because of this, we are making the assumption that the number of individuals that quit was a result of the pandemic and not personal choice.
+
+Given the many pros of the data and the process gone to clean/sort the data into exactly what we need, these assumptions are plausible and do not have any extreme effect on the outcome, other than minor differences should an assumption be completely false.
+
+Assumptions regarding the regression:
+Assumptions made regarding multivariate linear regression include the relationship between the dependent variable and independent variable being linear. To check this, we looked for a normal distribution within the data and a constant standard deviation. The second assumption is homoscedasticity, which we used the standard robust errors to account for the possibility of heteroscedasticity.
+
+<br> 
+
+### Conclusion
+
+Overall, the employment rates of the retail industry was found to have been largely affected by the impact of COVID, ranking above the median performance for the top five industries with the most observations. Specifically, the retail industry was the second highest industry that was affected by the impact of COVID. We found that the Entertainment industry had the largest reaction to the pandemic, where the Education industry was least affected. Overall, as the worst stages of the pandemic are now in the past, we see a common trend where all industries unemployment rate are decreasing to pre-COVID levels, if not less. From an economic outlook, it seems that the worst of the pandemic has passed and industries are recovering. 

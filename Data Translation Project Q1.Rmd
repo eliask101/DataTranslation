@@ -1,0 +1,308 @@
+---
+title: "Data Translation Assignment: Question 1"
+author: "Group 1"
+date: "3/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Question 1: 
+#### How has COVID affected the health of the retail industry, as measured by employment?
+
+In order to study the effect of COVID on the employment in the retail industry, we are running a multivariate linear regression with unemployment rate as the dependent variable and different waves of the pandemic as the main independent variable alongside multiple controls that reflect different demographics. 
+
+We chose unemployment rate, expressed as the number of unemployed people divided by the number of unemployed and employed people combined, to assess the health of the retail industry over time. We chose this over using a simple binary variable that indicated whether or not a person was employed because those are not the only two options that people can shift between. A person who was employed could become unemployed, but then also stop looking for a job and leave the labor force completely. By recalculating the number of employed and unemployed people each month, we accounted for the fluctuating size of the labor force. Unemployment rate is a good measure of the health of an industry because it tells us whether or not businesses are successful enough to stay open and keep their employees, meaning whether or not jobs are available and sustainable. 
+
+We chose to represent COVID as a dummy variable that represented different time periods from before and after the onset of the pandemic. There is a Pre-COVID period before March 2020, the First Wave from March 2020 to to May 2020, the Second Wave from June 2020 to October 2020, and so on. We created this based on the intuition that the impact of COVID on unemployment likely varied over the past two years depending on the number of cases, the availability of vaccines, and other factors. Using the COVID_WAVES variable we created, we are able to study how COVID affected the retail industry over time. The time periods associated with each wave were based on this [source]("https://time.com/6117006/covid-19-fifth-wave/").
+
+We chose to adjust for three demographic variables in order to consider how there are differences in the unemployment rate among different demographics even before the impact of COVID. We created binary or categorical variables for sex, race, and education levels so that we could build a regression model that showed how the onset of COVID pandemic in different waves relates to unemployment levels in the retail industry while holding these possible sources of variation constant.
+
+<br>
+
+### Libraries
+
+```{r}
+library(ipumsr)
+library(vtable)
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(jtools)
+library(car)
+library(knitr)
+```
+
+<br>
+
+### Loading IPUMS Data
+```{r}
+ddi <- read_ipums_ddi("cps_00003.xml")
+data <- read_ipums_micro(ddi)
+```
+
+<br>
+
+### Data Cleaning & Manipulation
+#### Adding Industry Names into the data
+```{r}
+# Joining the original data with indnames.csv
+ind_df <- read_csv('indnames.csv')
+ind_df <- rename(ind_df, IND = ind)
+df <- left_join(data, ind_df, by = "IND")
+df <- rename(df, INDNAME = indname)
+
+# Looking at industry names and number of observations available
+table(df$INDNAME)
+```
+
+#### Filtering for specific characteristics
+```{r}
+# Filtering for January 2018 to present day to study employment before and after the onset of the pandemic
+# Filtering to study Retail employment alone
+retail <- df %>% 
+  filter(YEAR > 2017) %>%
+  filter(INDNAME == "Retail Trade")
+  
+# Filtering out the excess ASEC data to avoid extra observations for each March
+# Converting the NA values (non-ASEC data) into a "0"
+retail$ASECFLAG[is.na(retail$ASECFLAG)] <- 0 
+
+retail <- retail %>%
+  filter(ASECFLAG != 1)
+```
+
+#### Creating new variables
+EMPLOYED - Binary Variable (TRUE or FALSE)
+```{r}
+# Group together "10" and "12" as Employed
+# Indicate "21" as Unemployed
+# Drop "32", "34", and "36" for not being in the Labor Force 
+
+retail <- retail %>%
+  filter(EMPSTAT < 30) %>%
+  mutate(EMPLOYED = EMPSTAT != 21)
+```
+
+YEAR_MONTH - Date Variable combining YEAR and MONTH together
+```{r}
+# Concatenating the YEAR and MONTH variable together
+retail$YEAR_MONTH <- str_c(retail$YEAR, "-", retail$MONTH)
+
+# Using package lubridate to render the variable as a Date type
+retail <- retail %>%
+  mutate(YEAR_MONTH = ym(YEAR_MONTH))
+```
+
+FEMALE - Binary Variable (TRUE or FALSE)
+```{r}
+# Renaming SEX variable as FEMALE
+retail <- rename(retail, FEMALE = SEX)
+
+# Changing the "1" coding for SEX variable into FALSE
+# Changing the "2" conding for SEX variable into TRUE
+retail$FEMALE <- as.numeric(retail$FEMALE)
+retail$FEMALE[retail$FEMALE == "1"] <-"FALSE"
+retail$FEMALE[retail$FEMALE == "2"] <- "TRUE"
+```
+
+POC - Binary Variable for RACE (TRUE for Person of Color, FALSE for White)
+```{r}
+# Exclude 100 - code for White
+# POC includes all people of color, including those with mixed heritage
+retail <- retail %>%
+  mutate(POC = RACE != 100)
+```
+
+BA_DEGREE - Binary Variable for Bachelor's Degree Holders (TRUE or FALSE)
+```{r}
+# TRUE for those with a Bachelor's Degree
+# FALSE for those without
+
+retail$EDUC <- as.numeric(retail$EDUC)
+retail <- retail %>%
+  mutate(BA_DEGREE = EDUC > 110)
+```
+
+#### Calculating Unemployment Rates
+Overall for the whole Retail Industry
+```{r}
+ret_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, WTFINL) %>%
+  group_by(YEAR_MONTH, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+FEMALE Variable
+```{r}
+female_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, FEMALE, WTFINL) %>%
+  group_by(YEAR_MONTH, FEMALE, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+POC Variable
+```{r}
+poc_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, POC, WTFINL) %>%
+  group_by(YEAR_MONTH, POC, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+BA_DEGREE Variable
+```{r}
+ba_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, BA_DEGREE, WTFINL) %>%
+  group_by(YEAR_MONTH, BA_DEGREE, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE")
+```
+
+Creating a master data frame with FEMALE, POC, and BA_DEGREE included
+```{r}
+retail_urate <- retail %>%
+  select(YEAR_MONTH, EMPLOYED, FEMALE, POC, BA_DEGREE, WTFINL) %>%
+  group_by(YEAR_MONTH, FEMALE, POC, BA_DEGREE, EMPLOYED) %>%
+  summarize(n = sum(WTFINL)) %>%
+  mutate(LABOR_FORCE = sum(n)) %>%
+  mutate(U_RATE = (n/LABOR_FORCE)*100) %>%
+  filter(EMPLOYED == "FALSE") %>%
+  mutate(COVID_WAVES = case_when(YEAR_MONTH < "2020-03-01" ~ "Pre-COVID",
+                                 YEAR_MONTH > "2020-02-01" & YEAR_MONTH < "2020-06-01" ~ "First Wave",
+                                 YEAR_MONTH > "2020-05-01" & YEAR_MONTH < "2020-10-01" ~ "Second Wave",
+                                 YEAR_MONTH > "2020-09-01" & YEAR_MONTH < "2021-08-01" ~ "Third Wave",
+                                 YEAR_MONTH > "2021-07-01" ~ "Fourth Wave")) %>% 
+  mutate(COVID_WAVES = factor(COVID_WAVES,
+                              levels = c("Pre-COVID",
+                                         "First Wave", 
+                                         "Second Wave",
+                                         "Third Wave",
+                                         "Fourth Wave")))
+```
+
+<br>
+
+### Visualizations
+
+```{r}
+ret_line <- ggplot(data=ret_urate, aes(x=YEAR_MONTH, y=U_RATE)) + geom_line()
+ret_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves",
+       y = "Unemployment Rate (%)") 
+```
+<br>
+Observing the unemployment rate over time for the retail industry as a whole shows a large spike in the first wave of COVID. The unemployment rate falls slowly in the subsequent waves, except for in the third wave when there is a small jump again before falling. This suggests how the retail industry was impacted the heaviest during the first wave, and the effects have been reducing over time and moving closer to what the usual unemployment rate was Pre-COVID.
+
+<br>
+
+```{r}
+fem_line <- ggplot(data=female_urate, aes(x=YEAR_MONTH, y=U_RATE, color=FEMALE)) + geom_line()
+fem_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves by Sex",
+       y = "Unemployment Rate (%)") 
+```
+<br>
+Observing the unemployment rate over time between males and females reveal that generally the unemployment rate for females are higher than that of males. The difference between their rates are especially large within the first wave of COVID, however, this gap reduces to just about what it was Pre-COVID in the subsequent waves. 
+
+<br>
+
+```{r}
+poc_line <- ggplot(data=poc_urate, aes(x=YEAR_MONTH, y=U_RATE, color=POC)) + geom_line()
+poc_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves by Race",
+       y = "Unemployment Rate (%)") +
+  scale_color_discrete(name ="People of Color")
+```
+<br>
+
+Observing the unemployment rate over time between those who are White and those who are People of Color (POC) reveal that the unemployment rate for POCs are generally higher than that for White people, although the difference in the rates over time is not as consistent as it was between males and females. Interestingly, in comparison to how females’ unemployment jumped a lot higher than that of males in the first wave, the difference in the rates between White people and POCs are not as large during in the first wave. The gap actually increases in the subsequent waves. This suggests that perhaps the initial shock of the pandemic did not affect the unemployment rates differently among different races.
+
+
+<br>
+
+```{r}
+ba_line <- ggplot(data=ba_urate, aes(x=YEAR_MONTH, y=U_RATE, color=BA_DEGREE)) + geom_line()
+ba_line + scale_x_date(breaks = scales::breaks_pretty(13)) + 
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-03-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-06-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2020-10-01")), linetype=2) +
+  geom_vline(alpha=0.3, xintercept = as.numeric(as.Date("2021-08-01")), linetype=2) +
+  theme(panel.background = element_blank(),
+        plot.title = element_text(hjust = 0, size=12, face="bold"),
+        axis.title.x = element_blank()) +
+  labs(title = "Changes in Unemployment Rate Through COVID-19 Waves by Education",
+       y = "Unemployment Rate (%)") +
+  scale_color_discrete(name ="Bachelor's Degree or Higher")
+```
+<br>
+
+Observing the unemployment rate over time between those who have a Bachelor’s degree or higher and those who do not reveal that the unemployment rate for those without a degree is generally higher. An interesting point in this graph is where the unemployment rates end up nearly the same right when we entered the third COVID wave, even though the unemployment rate for those without a degree was consistently higher through the first and second waves.
+
+<br>
+
+### Regression & Results
+```{r}
+reg_retail <- lm(U_RATE ~ COVID_WAVES + FEMALE + POC + BA_DEGREE, data = retail_urate)
+export_summs(reg_retail, robust = TRUE, model.names = "Retail")
+```
+
+#### Interpreting the results
+
+Accounting for differences in demographics (sex, race, and whether or not a Bachelor's degree was attained), the unemployment rate during the first COVID wave is 8.43 percentage point higher than pre-COVID time period. 
+
+The impact of this associated effect reduced over time. During the second COVID wave, the unemployment rate is 5.97 percentage points higher than pre-COVID, and by the third wave, this change drops to 2.41 percentage points. This shows that the impact of the pandemic on the health of the Retail Industry as measured by employment was much larger in the beginning of the pandemic, during the first wave between March 2020 to May 2020, in comparison to later on. 
+
+While other regression models were run with interaction terms to see if there was a notable difference of the effect of COVID between different groups like females in comparison to males, the low significance levels suggested that there was not enough evidence to support such a claim. The controls to account for differences in sex, race, and education levels were deemed necessary because there were clearly differences in unemployment levels between certain groups, even before the pandemic as illustrated in the visualizations above. 
+
+```{r}
+linearHypothesis(reg_retail, matchCoefs(reg_retail, 'COVID_WAVES'))
+```
+The linear hypothesis test above tests the null hypothesis that the coefficients for the COVID_WAVES variable are 0. If the p-value was larger than 0.05, this means we would fail to reject the null hypothesis that the COVID_WAVES variable has no predictive power in the linear model. However, in this case, the p-value is smaller than 0.05, which indicates that there is strong evidence to reject the null hypothesis. 
+
+<br>
+
+### Assumptions
+Some important assumptions in creating a linear regression model include not having heteroscedasticity nor multicollinearity. Heteroscedasticity should not be an issue in our analysis because we employed robust standard of errors. Multicollinearity could potentially be an issue, where our independent variables may be correlated to one another. It is possible that our demographics variables like race and sex are correlated, especially for the minorities in each classification like being a woman or being a person of color. 
+
+We included some key demographics characteristics that we believed would show large differences in unemployment rates like race. Some other variables we could have included from IPUMS are age, marital status, and also whether or not workers have disabilities. 
+
+An important assumption we made about the data set specifically is the reason behind unemployment. We graphed and built our regressions based on the idea that unemployment rose with the onset of COVID because jobs were scarce during lockdown. However, it is possible that some people in the labor force quit their job for other reasons or chose to stay unemployed for the unemployment benefits and insurance. There are likely shifts from employment to unemployment that are not related to COVID at all, however, due to the lack of available data, we must go forward with the assumption that the rise in unemployment is majorly related to COVID. 
+
+<br> 
+
+### Conclusion
+Overall, the retail industry was impacted severely when the COVID-19 pandemic first hit. Unemployment levels in the industry rose sharply to record levels in 2020 to then moderately subside to near pre-pandemic levels coming into 2022 as the economy recovers and subsequent waves having a lesser impact to the industry. From an employment perspective as of current, the retail industry is looking well positioned moving forward as the effects of the COVID-19 pandemic is well behind it.
